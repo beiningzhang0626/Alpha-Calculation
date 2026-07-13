@@ -183,3 +183,102 @@ def score_low(df, col, by='rebalance_date'):
     """Cross-sectional percentile score where lower values are better."""
     neg = -df[col]
     return neg.groupby(df[by], sort=False).transform(_xs_score)
+
+
+# ======================================================================
+# 8. Stock-level time-series normalization
+# ======================================================================
+
+def _rolling_history_rank(s, window, min_valid):
+    """Rank each value against the previous window observations."""
+    values = pd.to_numeric(s, errors='coerce').to_numpy(dtype='float64')
+    result = np.full(len(values), np.nan, dtype='float64')
+
+    for i, current in enumerate(values):
+        if not np.isfinite(current):
+            continue
+
+        start = max(0, i - window)
+        history = values[start:i]
+        history = history[np.isfinite(history)]
+
+        if len(history) < min_valid:
+            continue
+
+        if np.unique(history).size < 2:
+            continue
+
+        below = np.sum(history < current)
+        equal = np.sum(history == current)
+
+        percentile = (below + 0.5 * equal) / len(history)
+        result[i] = percentile - 0.5
+
+    return pd.Series(result, index=s.index)
+
+
+def rolling_ts_rank(
+    df,
+    col,
+    window,
+    min_valid,
+    by='security_id',
+    order='date'
+):
+    """
+    Centered historical percentile rank in [-0.5, 0.5].
+
+    The current value is compared with previous observations only.
+    """
+    d = df.sort_values([by, order])
+
+    result = (
+        d.groupby(by, sort=False, group_keys=False)[col]
+        .apply(
+            lambda s: _rolling_history_rank(
+                s,
+                window=window,
+                min_valid=min_valid
+            )
+        )
+    )
+
+    return result.reindex(df.index)
+
+
+def ts_rank_quarterly(
+    df,
+    col,
+    window=20,
+    min_valid=12,
+    by='security_id',
+    order='rebalance_date'
+):
+    """Five-year rolling rank for quarterly factors."""
+    return rolling_ts_rank(
+        df=df,
+        col=col,
+        window=window,
+        min_valid=min_valid,
+        by=by,
+        order=order
+    )
+
+
+def ts_rank_monthly(
+    df,
+    col,
+    window=60,
+    min_valid=36,
+    by='security_id',
+    order='date'
+):
+    """Five-year rolling rank for monthly or month-end sampled factors."""
+    return rolling_ts_rank(
+        df=df,
+        col=col,
+        window=window,
+        min_valid=min_valid,
+        by=by,
+        order=order
+    )
